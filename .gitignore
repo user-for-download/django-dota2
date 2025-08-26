@@ -272,3 +272,4 @@ dump.rdb
 dota/media/
 
 .pytest_cache/
+.idea/
