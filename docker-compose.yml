@@ -1,0 +1,129 @@
+services:
+  db:
+    image: postgres:16
+    env_file: .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-myuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mypassword}
+      POSTGRES_DB: ${POSTGRES_DB:-mydb}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+#      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    env_file: .env
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6378:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+
+  web:
+    build: .
+    env_file: .env
+    environment:
+      ENVIRONMENT: local
+      APP_VERSION: ${APP_VERSION:-dev}
+      DJANGO_SETTINGS_MODULE: config.settings.local
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      MESSAGING_REDIS_URL: redis://redis:6379/1
+      FASTSTREAM_REDIS_URL: redis://redis:6379/2
+      DEFAULT_CACHE_ALIAS: default
+      CACHES__default__LOCATION: redis://redis:6379/1
+      # Match fetcher timeout
+      CHUNK_TIMEOUT_S: 120
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "
+      sleep 10 &&
+      python manage.py migrate --noinput &&
+      python manage.py collectstatic --noinput &&
+      uvicorn config.asgi:application --host 0.0.0.0 --port 8000 --workers 4 --loop uvloop --http h11 --log-level info
+      "
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health?check=basic"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  worker:
+    build: .
+    env_file: .env
+    environment:
+      ENVIRONMENT: local
+      DJANGO_SETTINGS_MODULE: config.settings.local
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      FASTSTREAM_REDIS_URL: redis://redis:6379/2
+      DEFAULT_CACHE_ALIAS: default
+      CACHES__default__LOCATION: redis://redis:6379/1
+      WORKER_CONCURRENCY: 10
+      BATCH_SIZE: 100
+      MAX_RETRIES: 3
+      RETRY_DELAY_S: 1.0
+      CB_FAIL_THRESHOLD: 5
+      CHUNK_TIMEOUT_S: 120
+    depends_on:
+      web:
+        condition: service_healthy
+    command: python manage.py run_workers
+    restart: unless-stopped
+
+  cron:
+    build: .
+    env_file: .env
+    environment:
+      ENVIRONMENT: local
+      DJANGO_SETTINGS_MODULE: config.settings.local
+      DATABASE_URL: postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      FASTSTREAM_REDIS_URL: redis://redis:6379/2
+      DEFAULT_CACHE_ALIAS: default
+      CACHES__default__LOCATION: redis://redis:6379/1
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - ./cronjobs.txt:/cronjobs.txt
+    command: ["/usr/local/bin/supercronic", "/cronjobs.txt"]
+    restart: unless-stopped
+
+#  pgadmin:
+#    image: dpage/pgadmin4:8
+#    env_file: .env
+#    environment:
+#      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@example.com}
+#      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:-admin}
+#      PGADMIN_LIST_SERVERS: '[{"name":"Local","pgHost":"db","pgPort":5432,"pgUser":"${POSTGRES_USER}","pgPassword":"${POSTGRES_PASSWORD}","serverGroup":"Servers"}]'
+#    ports:
+#      - "5050:80"
+#    depends_on:
+#      db:
+#        condition: service_healthy
+#    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:

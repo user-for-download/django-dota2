@@ -1,0 +1,158 @@
+from __future__ import annotations
+
+# ─── std-lib ─────────────────────────────────────────────────────────────
+from typing import Any
+
+# ─── third-party / Django ────────────────────────────────────────────────
+from asgiref.sync import sync_to_async
+from django.core.management.base import BaseCommand
+from django.core.management.base import CommandError
+from django.db import transaction
+
+# ─── project ────────────────────────────────────────────────────────────
+from apps.players.models import NotablePlayer
+from apps.players.models import Player
+from apps.teams.models import Team
+from utils.command_utils import CommandStreamLogger
+from utils.http_helpers import fetch_json_data
+from utils.logging_utils import get_task_logger
+
+# ─────────────────────────────────────────────────────────────────────────
+TEAM_PLAYERS_URL = "https://api.opendota.com/api/teams/{team_id}/players"
+log = get_task_logger(__name__, coloured=True)
+
+
+# ════════════════════════════════════════════════════════════════════════
+class Command(BaseCommand):
+    """
+    Management command:
+
+        $ python manage.py update_team_players <team_id> [--timeout 30] [--force-update]
+
+    • Fetches roster from OpenDota.
+    • Upserts Player + NotablePlayer rows.
+    """
+
+    help = __doc__
+
+    # ─── CLI args ────────────────────────────────────────────────────────
+    def add_arguments(self, parser) -> None:
+        parser.add_argument("team_id", type=int)
+        parser.add_argument("--timeout", type=int, default=30, help="HTTP timeout (s)")
+        parser.add_argument("--force-update", action="store_true", help="Deactivate old roster first")
+
+    # ─── entry-point (async) ─────────────────────────────────────────────
+    async def handle(self, *args, **opts):  # type: ignore[override]
+        self.log = CommandStreamLogger(self)
+
+        team_id: int = opts["team_id"]
+        timeout: int = opts["timeout"]
+        force_update: bool = opts["force_update"]
+
+        self.log.info("Fetching roster for team %s…", team_id)
+
+        team = await self._get_team(team_id)
+        self.log.info("Found team: %s (%s)", team.name or team.tag, team.team_id)
+
+        players = await self._fetch_players(team_id, timeout)
+        if not players:
+            self.log.error("OpenDota returned no data.")
+            return
+
+        updated, created = await self._sync_roster(team, players, force_update)
+
+        if updated or created:
+            self.log.success("✅  %s updated, %s created", updated, created)
+        else:
+            self.log.warning("No roster changes.")
+
+    # ─────────────────────────────────────────────────────────────────────
+    #  Network
+    # ─────────────────────────────────────────────────────────────────────
+    async def _fetch_players(
+        self, team_id: int, timeout: int,
+    ) -> list[dict[str, Any]] | None:
+        url = TEAM_PLAYERS_URL.format(team_id=team_id)
+        data = await fetch_json_data(url, timeout=timeout)
+        if not isinstance(data, list):
+            self.log.warning("Unexpected payload format from OpenDota.")
+            return None
+        return data
+
+    # ─────────────────────────────────────────────────────────────────────
+    #  Roster pipeline
+    # ─────────────────────────────────────────────────────────────────────
+    async def _sync_roster(
+        self,
+        team: Team,
+        roster: list[dict[str, Any]],
+        force_update: bool,
+    ) -> tuple[int, int]:
+        if force_update:
+            await self._deactivate_roster(team.team_id)
+            self.log.info("Existing roster deactivated.")
+
+        updated = created = 0
+        for payload in roster:
+            account_id = payload.get("account_id")
+            if not account_id:
+                continue
+            try:
+                was_created = await self._upsert_player(account_id, payload, team)
+                created += was_created
+                updated += 0 if was_created else 1
+            except Exception:
+                self.log.exception("Failed to process player %s", account_id)
+        return updated, created
+
+    # ─── small DB helpers (sync_to_async) ────────────────────────────────
+    @sync_to_async
+    def _get_team(self, team_id: int) -> Team:
+        try:
+            return Team.objects.get(team_id=team_id)
+        except Team.DoesNotExist:
+            raise CommandError(f"Team {team_id} not found.")
+
+    @sync_to_async
+    def _deactivate_roster(self, team_id: int) -> None:
+        with transaction.atomic():
+            NotablePlayer.objects.filter(team_id=team_id).update(is_current_team_member=False)
+
+    @sync_to_async
+    def _upsert_player(
+        self, account_id: int, payload: dict[str, Any], team: Team,
+    ) -> int:
+        """
+        Returns 1 if a new Player or NotablePlayer row was inserted.
+        """
+        with transaction.atomic():
+            player, p_created = Player.objects.get_or_create(
+                account_id=account_id,
+                defaults={"personaname": payload.get("name") or f"Player {account_id}"},
+            )
+
+            # fill missing player name if now available
+            if (
+                not p_created
+                and not player.personaname
+                and (name := payload.get("name"))
+            ):
+                player.personaname = name
+                player.save(update_fields=["personaname"])
+
+            np_defaults = {
+                "name": payload.get("name") or f"Player {account_id}",
+                "team_id": team.team_id,
+                "team_name": team.name,
+                "team_tag": team.tag,
+                "is_current_team_member": True,
+                "is_pro": True,
+                "games_played": payload.get("games_played") or 0,
+                "wins": payload.get("wins") or 0,
+                "country_code": payload.get("is_from_country"),
+            }
+            _, np_created = NotablePlayer.objects.update_or_create(
+                account_id=account_id,
+                defaults=np_defaults,
+            )
+        return int(p_created or np_created)

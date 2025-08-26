@@ -1,0 +1,7 @@
+0 2 * * * cd /app && python manage.py fetch_teams --force
+0 3 * * * cd /app && python manage.py fetch_players --force
+0 4 * * * cd /app && python manage.py fetch_leagues --force
+0 5 * * * cd /app && python manage.py fetch_matches
+0 6 * * * cd /app && python manage.py build_pairwise_table  --global --min-games 100
+0 0 1 * * cd /app && python manage.py update_item
+0 0 2 * * cd /app && python manage.py update_heroes

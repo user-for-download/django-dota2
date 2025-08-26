@@ -1,0 +1,204 @@
+# ================================================================
+#  RUFF (linter + import-sorter + formatter)
+# ================================================================
+[tool.ruff]
+target-version = "py312"
+line-length = 119
+src = ["."]
+extend-exclude = [
+  "*/migrations/*",
+  "staticfiles/*",
+  "node_modules/*",
+  ".venv/*",
+]
+
+[tool.ruff.lint]
+# See https://docs.astral.sh/ruff/rules/ for all rules.
+select = [
+  # Core Flake8
+  "F", "E", "W",
+  # Bugbear (potential bugs & design problems)
+  "B",
+  # Comprehensions (unnecessary list comprehensions)
+  "C4",
+  # mccabe (complexity)
+  "C90",
+  # Imports (isort)
+  "I",
+  # Naming
+  "N",
+  # pyupgrade (modernize code)
+  "UP",
+  # flake8-async
+  "ASYNC",
+  # bandit (security)
+  "S",
+  # Error Prone (common mistakes)
+  "BLE",
+  # Builtins
+  "A",
+  # Comments
+  "COM",
+  # Datetime
+  "DTZ",
+  # Debug
+  "T10", "T20",
+  # Django
+  "DJ",
+  # Error messages
+  "EM",
+  # Executable
+  "EXE",
+  # Future-annotations
+  "FA",
+  # Implicit-str-concat
+  "ISC",
+  # Import-conventions
+  "ICN",
+  # Logging
+  "G",
+  # Input
+  "INP",
+  # Pie
+  "PIE",
+
+  # Pytest
+  "PT",
+  # Quotes
+  "Q",
+  # Refactoring
+  "RSE",
+  # Return
+  "RET",
+  # Self
+  "SLF",
+  # Slots
+  "SLOT",
+  # Simplify
+  "SIM",
+  # Tornado
+  "TID",
+  # Type-checking
+  "TC",
+
+  # Pathlib
+  "PTH",
+  # Eradicate (commented-out code)
+  "ERA",
+  # Pandas
+  "PD",
+  # pygrep-hooks
+  "PGH",
+  # Pylint
+  "PL",
+  # Tryceratops
+  "TRY",
+  # Flynt
+  "FLY",
+  # Performance
+  "PERF",
+  # Ruff-specific
+  "RUF",
+]
+ignore = [
+  "S101",      # `assert` is fine in tests
+  "RUF012",    # Allows `mutable=dataclasses.field(default_factory=list)`
+  "SIM102",    # Allow `if/else` instead of ternary
+  "E501",      # Line length is handled by the formatter
+  "B008",      # `functools.partial` is fine for simple funcs
+  "UP006",     # `Optional` is more readable than `| None`
+  "UP007",     # `list[int]` is fine, no need for `typing.List`
+]
+extend-unsafe-fixes = ["UP038"] # Allow upgrading type hints inside of quoted annotations
+
+[tool.ruff.lint.isort]
+# Define which modules are part of your project
+known-first-party = ["apps", "config", "infrastructure", "common"]
+# Let the formatter handle line-wrapping
+force-single-line = false
+single-line-exclusions = ["typing"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15 # Adjust as needed
+
+[tool.ruff.format]
+docstring-code-format = true
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+
+# ================================================================
+#  PYTEST-DJANGO (This section makes pytest.ini obsolete)
+# ================================================================
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "config.settings.test"
+# -n auto: run tests in parallel
+# --durations=10: show 10 slowest tests
+# --strict-markers: fail on unknown markers
+addopts = "-q --tb=short --reuse-db --no-migrations --cov=apps --cov-report=xml --durations=10 -n auto --strict-markers"
+pythonpath = "."
+markers = [
+  "slow: marks tests as slow (deselect with -m 'not slow')",
+]
+asyncio_mode = "auto" # This is the modern way to specify asyncio mode
+
+# ================================================================
+#  COVERAGE
+# ================================================================
+[tool.coverage.run]
+source = ["apps", "common", "infrastructure"]
+omit = [
+  "*/migrations/*",
+  "manage.py",
+  "*/tests/*",
+  "*/test_*.py",
+  "*/__init__.py",
+  "config/*",
+  "infrastructure/worker.py", # Exclude CLI entrypoints
+]
+
+[tool.coverage.report]
+fail_under = 80
+
+# ================================================================
+#  MYPY + DJANGO-STUBS
+# ================================================================
+[tool.mypy]
+python_version = "3.12"
+# Stricter checks for better type safety
+disallow_untyped_defs = true
+warn_return_any = true
+# Standard checks
+ignore_missing_imports = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+warn_unused_configs = true
+plugins = ["mypy_django_plugin.main", "pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+# Migrations are auto-generated and don't need type checks
+module = "*.migrations.*"
+ignore_errors = true
+
+[tool.django-stubs]
+django_settings_module = "config.settings.test"
+
+# ================================================================
+#  DJLINT (templates)
+# ================================================================
+[tool.djlint]
+profile = "django"
+indent = 2
+max_line_length = 119
+blank_line_after_tag = "load,extends"
+close_void_tags = true
+format_css = true
+format_js = true
+ignore = "H006,H030,H031,T002"
+include = "H017,H035"
+
+[tool.djlint.css]
+indent_size = 2
+
+[tool.djlint.js]
+indent_size = 2
